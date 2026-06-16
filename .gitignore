@@ -1,0 +1,7 @@
+etc/state.json
+etc/preinit-creds.json
+etc/probe-history/
+etc/generated/
+*.swp
+*.bak
+.DS_Store

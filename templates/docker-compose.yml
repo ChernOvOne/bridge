@@ -1,0 +1,17 @@
+services:
+  bridge-xray:
+    image: ghcr.io/xtls/xray-core:latest
+    container_name: bridge-xray-main
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.json:/etc/xray/config.json:ro
+    command: ["run", "-c", "/etc/xray/config.json"]
+
+  iperf3-server:
+    image: networkstatic/iperf3:latest
+    container_name: bridge-iperf3
+    restart: unless-stopped
+    ports:
+      - "5201:5201"
+    command: ["-s", "-p", "5201"]

@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# bin/bridge-cli — главный диспетчер. Запускается командой `br`.
+set -euo pipefail
+
+# Определить home (если установлен симлинком — нужен реальный путь)
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+  SCRIPT_PATH=$(readlink -f "$SCRIPT_PATH")
+done
+SCRIPT_DIR=$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+BRIDGE_CLI_HOME=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+export BRIDGE_CLI_HOME
+
+# shellcheck source=../lib/ui.sh
+source "${BRIDGE_CLI_HOME}/lib/ui.sh"
+# shellcheck source=../lib/state.sh
+source "${BRIDGE_CLI_HOME}/lib/state.sh"
+# shellcheck source=../lib/crypto.sh
+source "${BRIDGE_CLI_HOME}/lib/crypto.sh"
+# shellcheck source=../lib/deploy.sh
+source "${BRIDGE_CLI_HOME}/lib/deploy.sh"
+# shellcheck source=../lib/probe.sh
+source "${BRIDGE_CLI_HOME}/lib/probe.sh"
+# shellcheck source=../lib/update.sh
+source "${BRIDGE_CLI_HOME}/lib/update.sh"
+# shellcheck source=../lib/exit_mode.sh
+source "${BRIDGE_CLI_HOME}/lib/exit_mode.sh"
+# shellcheck source=../lib/entry_mode.sh
+source "${BRIDGE_CLI_HOME}/lib/entry_mode.sh"
+
+VERSION="1.0.0"
+
+print_help() {
+  cat <<EOF
+$(c_bold "bridge-cli") v${VERSION}  —  утилита для VLESS+Reality bridge-VPN-инфраструктуры
+
+Команды:
+  br                интерактивное меню (по роли этой ноды)
+  br init           wizard первого запуска (выбор роли)
+  br status         краткий статус (для cron/health-checks)
+  br probe <ip>     одиночный тест ноды без меню
+  br update         обновить bridge-cli из GitHub
+  br --help / -h    эта справка
+  br --version      показать версию
+
+Файлы:
+  ${BRIDGE_CLI_HOME}/etc/state.json       состояние (роль, мосты, ноды)
+  ${BRIDGE_CLI_HOME}/etc/generated/       сохранённые JSON-блоки по странам
+  ${BRIDGE_CLI_HOME}/etc/probe-history/   история тестов (хранится 10 дней)
+
+Документация: ${BRIDGE_CLI_HOME}/README.md
+EOF
+}
+
+# Init wizard — спрашивает роль
+do_init() {
+  state_init_empty
+  header "bridge-cli — первый запуск" "Выбор роли этой ноды"
+
+  # Если есть preinit-creds от install.sh с BRIDGE_CREDS — применить их позже
+  local has_preinit_creds=0
+  if [ -f "$PREINIT_CREDS" ]; then
+    has_preinit_creds=1
+    info "Найден preinit-creds от install.sh — будут импортированы в EXIT-режим"
+  fi
+
+  cat <<EOF
+
+  $(c_bold '[1] EXIT — foreign (зарубежная) нода')
+       Эта нода будет принимать bridge-трафик от entry-ноды.
+       На неё установится docker-контейнер bridge-xray на :7443.
+
+  $(c_bold '[2] ENTRY — российская нода (Aeza/etc)')
+       Эта нода будет проксировать трафик клиентов в exit-ноды.
+       Здесь будут тесты, инвентарь exit-нод, генерация JSON-блоков.
+
+EOF
+
+  local role
+  while true; do
+    read -r -p "$(c_bold 'Выбор') [1/2]: " role
+    case "$role" in
+      1) role=exit; break ;;
+      2) role=entry; break ;;
+      *) err "Введите 1 или 2" ;;
+    esac
+  done
+
+  state_complete_init "$role"
+
+  if [ "$role" = "exit" ]; then
+    do_init_exit "$has_preinit_creds"
+  else
+    do_init_entry
+  fi
+
+  ok "Инициализация завершена. Запустите 'br' для входа в меню."
+}
+
+do_init_exit() {
+  local from_creds="$1"
+
+  if [ "$from_creds" = "1" ]; then
+    # Импортируем из preinit-creds.json
+    step "Импортирую credentials от первой EXIT-ноды"
+    local creds
+    creds=$(cat "$PREINIT_CREDS")
+    local bridges
+    bridges=$(echo "$creds" | jq -c .bridges)
+    local iperf3
+    iperf3=$(echo "$creds" | jq -c .iperf3)
+    state_set ".exit.iperf3 = $iperf3"
+    # Используем общие ключи моста
+    local b
+    b=$(echo "$bridges" | jq -c '.[0]')
+    local uuid priv pub sid sni dest port transport
+    uuid=$(echo "$b" | jq -r .uuid)
+    priv=$(echo "$b" | jq -r .reality_priv)
+    pub=$(echo "$b" | jq -r .reality_pub)
+    sid=$(echo "$b" | jq -r .reality_shortid)
+    sni=$(echo "$b" | jq -r .reality_sni)
+    dest=$(echo "$b" | jq -r .reality_dest)
+    port=$(echo "$b" | jq -r .port)
+    transport=$(echo "$b" | jq -r .transport)
+    ok "Импортированы общие ключи моста (UUID: ${uuid:0:8}...)"
+
+    install_docker
+    case "$transport" in
+      reality) deploy_bridge_reality "main" "$port" "$uuid" "$priv" "$sid" "$sni" "$dest" ;;
+      xhttp)   deploy_bridge_xhttp   "main" "$port" "$uuid" "$priv" "$sid" "$sni" "$dest" ;;
+      *) err "Неизвестный транспорт: $transport"; return 1 ;;
+    esac
+
+    state_append '.exit.bridges' "$(jq -n \
+      --arg name "main" --argjson port "$port" --arg transport "$transport" \
+      --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" \
+      --arg sid "$sid" --arg sni "$sni" --arg dest "$dest" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cn "bridge-xray-main" \
+      '{name:$name, port:$port, transport:$transport, uuid:$uuid, reality_priv:$priv, reality_pub:$pub, reality_shortid:$sid, reality_sni:$sni, reality_dest:$dest, deployed_at:$ts, container_name:$cn}')"
+
+    rm -f "$PREINIT_CREDS"
+  else
+    # Свежая первая EXIT-нода — генерим ключи
+    step "Генерирую новые credentials моста"
+    install_docker
+    local uuid kp priv pub sid
+    uuid=$(gen_uuid)
+    kp=$(gen_x25519) || return 1
+    priv=$(echo "$kp" | sed -n '1p')
+    pub=$(echo "$kp"  | sed -n '2p')
+    sid=$(gen_shortid_8)
+    ok "UUID:      $uuid"
+    ok "Priv:      $priv"
+    ok "Pub:       $pub"
+    ok "ShortId:   $sid"
+
+    echo
+    local transports=("Reality+TCP+Vision — стандартный, лучше всего маскирует трафик" \
+                      "Reality+xhttp — для клиентов с проблемами UDP-DNS" \
+                      "WireGuard — plain WG-туннель (без Reality)")
+    menu_select "Какой транспорт использовать на этом мосту?" "${transports[@]}"
+    local transport
+    case "$MENU_REPLY" in
+      0) transport=reality ;;
+      1) transport=xhttp ;;
+      2) transport=wg ;;
+    esac
+
+    prompt "Порт моста" "7443"
+    local port="$REPLY"
+
+    case "$transport" in
+      reality) deploy_bridge_reality "main" "$port" "$uuid" "$priv" "$sid" "max.ru" "max.ru:443" ;;
+      xhttp)   deploy_bridge_xhttp   "main" "$port" "$uuid" "$priv" "$sid" "max.ru" "max.ru:443" ;;
+      wg)      deploy_bridge_wg      "main" "$port" ;;
+    esac
+
+    state_append '.exit.bridges' "$(jq -n \
+      --arg name "main" --argjson port "$port" --arg transport "$transport" \
+      --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" \
+      --arg sid "$sid" --arg sni "max.ru" --arg dest "max.ru:443" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cn "bridge-xray-main" \
+      '{name:$name, port:$port, transport:$transport, uuid:$uuid, reality_priv:$priv, reality_pub:$pub, reality_shortid:$sid, reality_sni:$sni, reality_dest:$dest, deployed_at:$ts, container_name:$cn}')"
+  fi
+
+  # iperf3
+  echo
+  if confirm "Поднять iperf3-сервер для тестов скорости с ENTRY-ноды?" "y"; then
+    info "iperf3 нужен чтобы ENTRY-нода могла измерять реальную скорость канала до этой EXIT-ноды (в Мбит/с)."
+    prompt "Порт iperf3" "5201"
+    local i3port="$REPLY"
+    deploy_iperf3_server "$i3port"
+    state_set ".exit.iperf3 = {enabled: true, port: $i3port, allowed_ips: []}"
+    info "Чтобы ограничить доступ к iperf3 только для IP ENTRY-нод — добавьте их позже в state.json"
+  fi
+}
+
+do_init_entry() {
+  step "Инициализация ENTRY-режима"
+  ok "Готово. Используйте меню для добавления exit-нод и тестирования."
+  info "Установить Docker сразу? (нужен только если планируете запускать клиентский xray локально)"
+  if confirm "Установить Docker?" "n"; then
+    install_docker
+  fi
+}
+
+# br status — короткий вывод
+do_status() {
+  if ! state_exists; then
+    echo "uninstalled"
+    exit 1
+  fi
+  local role; role=$(state_role)
+  echo "role=$role"
+  if [ "$role" = "exit" ]; then
+    local n; n=$(state_count '.exit.bridges')
+    echo "bridges=$n"
+    while IFS= read -r b; do
+      local name port
+      name=$(echo "$b" | jq -r .name)
+      port=$(echo "$b" | jq -r .port)
+      local container="bridge-xray-${name}"
+      local status="stopped"
+      if docker ps --filter "name=$container" --format '{{.Names}}' 2>/dev/null | grep -q "$container"; then
+        status="running"
+      fi
+      echo "bridge $name port=$port status=$status"
+    done < <(state_get_raw '.exit.bridges[]')
+  else
+    local n; n=$(state_count '.entry.exit_nodes')
+    echo "exit_nodes=$n"
+  fi
+}
+
+# br probe <ip> — single probe
+do_probe() {
+  local ip="$1"
+  probe_history_init
+  print_probe_header
+  local res; res=$(probe_one "$ip" "${BRIDGE_PORT:-7443}" "${BRIDGE_REALITY_SNI:-max.ru}")
+  print_probe_row "$res"
+  save_probe_history "[$res]"
+}
+
+# Парсинг аргументов
+main() {
+  case "${1:-}" in
+    -h|--help|help)
+      print_help; exit 0 ;;
+    -v|--version|version)
+      echo "$VERSION"; exit 0 ;;
+    init)
+      require_root
+      do_init; exit 0 ;;
+    update)
+      require_root
+      update_from_git; exit 0 ;;
+    status)
+      do_status; exit 0 ;;
+    probe)
+      shift
+      [ $# -lt 1 ] && { err "Usage: br probe <ip>"; exit 1; }
+      do_probe "$1"; exit 0 ;;
+    "")
+      # Меню по умолчанию
+      if ! state_exists; then
+        require_root
+        do_init
+        return
+      fi
+      require_root
+      local role; role=$(state_role)
+      case "$role" in
+        exit)  exit_main_menu ;;
+        entry) entry_main_menu ;;
+        *)     err "Неизвестная роль в state.json: $role"; exit 1 ;;
+      esac
+      ;;
+    *)
+      err "Неизвестная команда: $1"
+      print_help
+      exit 1 ;;
+  esac
+}
+
+main "$@"

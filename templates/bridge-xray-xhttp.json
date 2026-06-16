@@ -1,0 +1,33 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "tag": "BRIDGE_INBOUND",
+    "port": 7443,
+    "listen": "0.0.0.0",
+    "protocol": "vless",
+    "settings": {
+      "clients": [{"id": "__UUID__"}],
+      "decryption": "none"
+    },
+    "streamSettings": {
+      "network": "xhttp",
+      "xhttpSettings": {
+        "host": "__REALITY_SNI__",
+        "path": "/api/v1/stream",
+        "mode": "auto"
+      },
+      "security": "reality",
+      "realitySettings": {
+        "show": false,
+        "dest": "__REALITY_DEST__",
+        "xver": 0,
+        "serverNames": ["__REALITY_SNI__"],
+        "privateKey": "__REALITY_PRIV__",
+        "shortIds": ["__REALITY_SHORTID__"]
+      }
+    }
+  }],
+  "outbounds": [
+    { "tag": "DIRECT", "protocol": "freedom", "settings": { "domainStrategy": "UseIP" } }
+  ]
+}

@@ -1,237 +1,281 @@
-# bridge — утилиты для расширения VLESS+Reality bridge VPN-сервиса
+# bridge-cli
 
-Два самодостаточных bash-скрипта для быстрого добавления **foreign exit-нод** (как DE/FR/NL/PL/KZ) в существующую bridge-архитектуру через **entry-ноду** (как Aeza) с панелью Remnawave.
+Утилита `br` для управления **VLESS+Reality bridge-VPN-инфраструктурой**: разворачивает зарубежные exit-ноды одной командой, тестирует их с entry-стороны, генерирует готовые JSON-блоки для копи-пасты в Remnawave-панель.
 
-## Архитектура (для контекста)
+## Установка
+
+Одной командой на любой Linux-ноде (root, apt/dnf/yum/apk):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | bash
+```
+
+Что произойдёт:
+
+1. Обновляется система (`apt upgrade` / аналог)
+2. Ставятся зависимости: `jq dialog openssl curl iperf3 git ca-certificates`
+3. Ставится Docker (через `get.docker.com`) если ещё нет
+4. Клонируется этот репо в `/opt/bridge-cli/`
+5. Создаётся симлинк `/usr/local/bin/br`
+6. Запускается `br init` — wizard выбора роли
+
+После установки команда `br` доступна глобально.
+
+### Установка дополнительной EXIT-ноды (с уже существующими credentials)
+
+На первой EXIT-ноде запусти в меню пункт `[3] Экспорт credentials` — получишь готовую строку. Запусти её на новой EXIT-ноде:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='<base64-blob>' bash
+```
+
+Скрипт распакует ключи, развернёт bridge-xray с теми же UUID/Reality-keys, добавит к общему мосту.
+
+---
+
+## Архитектура
 
 ```
    Клиент (Россия, Happp/v2rayNG)
               │
-              │  VLESS+Reality+TCP (без vision)
+              │  VLESS+Reality+TCP (без vision на этом плече)
               ▼
-   Entry-нода (Aeza, RU, ptr.network)
-   - remnanode (Remnawave Node)
-   - rw-core слушает VLESS_XX inbound на отдельных портах
+   ENTRY-нода (Россия, Aeza/etc)
+   - remnanode + rw-core (управляется Remnawave-панелью)
+   - VLESS_XX inbound на отдельных портах
    - routing: VLESS_XX → BRIDGE_XX outbound
               │
               │  VLESS+Reality+TCP+Vision к :7443
               ▼
-   Foreign exit-нода (любая страна)
-   - bridge-xray (standalone Docker)
-   - слушает :7443 VLESS+Reality+Vision
+   EXIT-нода (любая страна)
+   - standalone bridge-xray (Docker) на :7443
    - outbound: freedom → реальный интернет
+   - опционально: iperf3-сервер для тестов скорости
 ```
 
-**Ключевая идея:** entry-нода маскирует трафик клиента под Reality к bridge-xray. Bridge-xray НЕ подключён к Remnawave-панели — это просто standalone-listener с общим UUID и общим Reality-keypair. Каждая страна — отдельный inbound на entry-ноде с уникальным client-side Reality-keypair.
+**EXIT-ноды НЕ подключаются к Remnawave-панели** — это просто Reality-listener'ы с общим UUID моста. Каждая страна на ENTRY = отдельный inbound с уникальным client-side Reality-keypair.
 
 ---
 
-## Скрипт 1: `bootstrap-exit.sh` — развернуть новую exit-ноду
+## Использование
 
-**Запуск на foreign-ноде (US/UK/JP/...) от root:**
+### `br` — главное меню
 
-```bash
-BRIDGE_UUID='45530698-67ee-4ace-91ae-f495f34a4e88' \
-BRIDGE_REALITY_PRIV='QIh-HLgOUS6jX5Vdn-slSWBoLKFcgocmuXfDZ85n7EI' \
-BRIDGE_REALITY_SHORTID='61dfff54' \
-ENTRY_IP='45.152.198.131' \
-ENTRY_PORT='2087' \
-bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/bootstrap-exit.sh) us
+При первом запуске покажет init-wizard выбора роли (EXIT / ENTRY), при последующих — главное меню соответствующей роли.
+
+### EXIT-режим (зарубежная нода)
+
+```
+[1]  Добавить новую страну в подписку     ← генерит уникальный client-keypair + 3 JSON-блока
+[2]  Показать JSON-блоки сохранённых стран
+[3]  Экспорт credentials                  ← одна curl-строка для развёртывания следующей EXIT
+[4]  Подключить вторую ENTRY-ноду         ← общий или изолированный мост
+[5]  Тест моста (TLS, порт, скорость)
+[6]  Live-логи bridge-xray
+[7]  Перезапустить bridge-xray
+[8]  Удалить мост
+[9]  Обновить bridge-cli из GitHub
+[0]  Выход
 ```
 
-### Обязательные ENV-переменные
+### ENTRY-режим (российская/прокси-нода)
 
-| Переменная | Описание | Где взять |
-|---|---|---|
-| `BRIDGE_UUID` | Общий UUID, который entry-нода использует для подключения к bridge-xray | Из конфига существующих exit-нод (общий для всех) |
-| `BRIDGE_REALITY_PRIV` | Reality privateKey для bridge-inbound | Сгенерён единожды при создании первого bridge |
-| `BRIDGE_REALITY_SHORTID` | Reality shortId для bridge (общий) | Тот же, что в BRIDGE_DE/FR/NL/... outbound (например `61dfff54`) |
-| `ENTRY_IP` | IP вашей entry-ноды (Aeza), которая будет подключаться к этому bridge | Например `45.152.198.131` |
-| `ENTRY_PORT` | Свободный TCP-порт на entry-ноде для VLESS_XX inbound | Подбери из safe-list (см. ниже), не должен быть занят |
-
-### Опциональные ENV-переменные
-
-| Переменная | По умолчанию | Назначение |
-|---|---|---|
-| `BRIDGE_REALITY_SNI` | `max.ru` | SNI Reality для bridge (под что маскируется) |
-| `BRIDGE_REALITY_DEST` | `max.ru:443` | dest Reality для bridge |
-| `BRIDGE_PORT` | `7443` | Порт bridge-xray (можно поменять, не забыть в EntryNode-конфиге) |
-| `CLIENT_SNI` | автомат по стране | SNI клиентского inbound (US=amazon.com, FR=wildberries.ru, ...) |
-| `XRAY_IMAGE` | `ghcr.io/xtls/xray-core:latest` | Docker image для xray |
-| `INSTALL_DIR` | `/opt/bridge-xray` | Куда положить config.json |
-
-### Что скрипт делает
-
-1. Ставит Docker (если ещё не стоит) — apt/dnf/yum/apk
-2. Открывает `7443/tcp` в UFW / firewalld / iptables
-3. Создаёт `/opt/bridge-xray/{config.json,docker-compose.yml}` с общими bridge-ключами
-4. Запускает Docker-контейнер `bridge-xray` (network=host, restart=unless-stopped)
-5. Smoke-test (`/dev/tcp/127.0.0.1/7443`)
-6. Генерирует **уникальный** client-side Reality keypair через `docker run xray x25519`
-7. Печатает готовые JSON-блоки для копи-пасты в Remnawave Config Profile + параметры для нового Host в UI
-
-### Безопасные порты для `ENTRY_PORT`
-
-Не блокируются российскими провайдерами:
-- `443`, `2087`, `2083`, `8443`, `8447`, `8448`, `8449`, `2096`
-
-Часто фильтруются MTS-NN, не использовать:
-- `2053` (cloudflare-ish), всё что > 50000
-
-Проверь свободные на entry-ноде:
-```bash
-ss -tlnp | sort -k4 -n -t':'
+```
+[1]  Управление exit-нодами               ← inventory: добавить/удалить
+[2]  Тест ОДНОЙ exit-ноды                 ← ping, port, Reality, MTU
+[3]  Тест ВСЕХ exit-нод
+[4]  Тест скорости (iperf3)
+[5]  История тестов (10 дней)
+[6]  Самодиагностика (интерфейсы, маршруты, MTU)
+[7]  Сгенерировать xray-блоки для Remnawave
+[9]  Обновить bridge-cli из GitHub
+[0]  Выход
 ```
 
-### После запуска скрипта
+### CLI-команды (для скриптов)
 
-Скопируй три JSON-блока в **Remnawave panel → Config Profiles → Edit Raw JSON**:
-- Один в `inbounds` массив
-- Один в `outbounds` массив  
-- Один в `routing.rules` массив
-
-Замени плейсхолдер `<ВСТАВЬ публичный ключ от BRIDGE_REALITY_PRIV>` в outbound — это публичный ключ соответствующий твоему `BRIDGE_REALITY_PRIV` (получить: `echo PRIV | docker run --rm -i ghcr.io/xtls/xray-core:latest x25519 -i` — да, для уже существующего priv-key используй существующий pub-key из конфига какого-нибудь BRIDGE_XX outbound).
-
-Затем создай **Host** в UI по параметрам из вывода скрипта.
-
-Save → подписка обновится → клиенты подхватят.
+```bash
+br                # интерактивное меню (по роли)
+br init           # wizard первого запуска
+br status         # короткий статус (для cron/health-checks)
+br probe <ip>     # одиночный тест ноды
+br update         # git pull + restart
+br --help
+```
 
 ---
 
-## Скрипт 2: `probe-from-entry.sh` — проверка кандидатов на exit-ноду
+## Сценарий: добавить новую страну с нуля
 
-**Запуск на entry-ноде (Aeza, RU) от root:**
+Допустим, купили **JP-ноду** `45.67.89.10`, нужно добавить «Япония» в подписку.
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/probe-from-entry.sh) \
-    77.110.116.16 45.12.133.36 206.206.103.163
-```
-
-### Опциональные ENV
-
-| Переменная | По умолчанию | Назначение |
-|---|---|---|
-| `BRIDGE_PORT` | `7443` | Какой порт проверять на foreign-нодах |
-| `BRIDGE_REALITY_SNI` | `max.ru` | Ожидаемый SNI Reality (для валидации что это наш bridge) |
-| `PING_COUNT` | `10` | Сколько ping-пакетов |
-| `IPERF` | `0` | `=1` для throughput-теста (нужен iperf3 на foreign-ноде) |
-
-### Что проверяет
-
-Для каждого IP:
-- **ping** — packet loss + average RTT
-- **TCP-connect** к `7443` — доступен ли bridge-порт
-- **TLS handshake** через openssl — отвечает ли с `CN=max.ru` (то есть наш bridge-xray)
-- **MTU discovery** через tracepath
-- **Verdict**: `✅ excellent` / `⚠ packet loss` / `⚠ wrong CN` / `❌ unreachable`
-
-### Использование при планировании
-
-1. Получил новую foreign-ноду — **сначала** проверь:
-   ```bash
-   bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/probe-from-entry.sh) <new_ip>
-   ```
-2. Если `❌ unreachable` → ставить bridge-xray бесполезно (TSPU блокирует или firewall). Поменяй ноду.
-3. Если `✅ excellent` → запусти `bootstrap-exit.sh` на новой ноде.
-4. **После** развёртывания снова запусти `probe-from-entry.sh` чтобы убедиться что Reality живёт и MTU нормальный.
-
----
-
-## Подробный сценарий: добавить новую страну с нуля
-
-Допустим, купил **JP-ноду** `45.67.89.10` (Tokyo), нужно добавить «Япония» в подписку.
-
-### Шаг 1 — Probe из Aeza
+### Шаг 1 — На ENTRY-ноде (Aeza)
 
 ```bash
-# На Aeza:
-bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/probe-from-entry.sh) 45.67.89.10
+br
+# [2] Тест ОДНОЙ exit-ноды → 45.67.89.10
 ```
 
-Ожидаем `❌ unreachable` (потому что bridge-xray ещё не развёрнут). Главное — `ping OK` (значит TSPU нас не режет).
+Если **TCP/7443 unreachable** при нормальном ping — значит bridge-xray ещё не развёрнут. Главное чтобы ping работал (TSPU не блокирует маршрут).
 
-### Шаг 2 — Bootstrap JP-ноды
+### Шаг 2 — На JP-ноде
 
 ```bash
-# На JP-ноде (ssh root@45.67.89.10):
-BRIDGE_UUID='45530698-67ee-4ace-91ae-f495f34a4e88' \
-BRIDGE_REALITY_PRIV='<твой_приватный_ключ_моста>' \
-BRIDGE_REALITY_SHORTID='61dfff54' \
-ENTRY_IP='45.152.198.131' \
-ENTRY_PORT='8449' \
-bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/bootstrap-exit.sh) jp
+ssh root@45.67.89.10
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='<creds>' bash
 ```
 
-Скрипт ставит Docker, поднимает bridge-xray, генерит уникальный client-keypair и печатает 3 JSON-блока + параметры Host.
+(Где `<creds>` — то что выдал `[3] Экспорт credentials` на первой EXIT-ноде.)
 
-### Шаг 3 — Подтверждение через probe
+### Шаг 3 — Создать конфиг страны (на JP-ноде)
 
 ```bash
-# Обратно на Aeza:
-bash <(curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/probe-from-entry.sh) 45.67.89.10
+br
+# [1] Добавить новую страну в подписку
+# Country code: jp
+# ENTRY IP: 45.152.198.131
+# ENTRY port: 8449
+# SNI: rakuten.co.jp (auto)
 ```
 
-Должно стать `✅ excellent`.
+CLI распечатает 3 JSON-блока и параметры Host. Также сохранит всё в `/opt/bridge-cli/etc/generated/jp.json`.
 
 ### Шаг 4 — Remnawave Panel
 
-1. Открой **Config Profiles → Edit Raw JSON**:
-   - Вставь `VLESS_JP` в `inbounds[]`
-   - Вставь `BRIDGE_JP` в `outbounds[]` (не забудь подставить публичный ключ моста!)
-   - Вставь routing-rule в `routing.rules[]`
+1. **Config Profiles → Edit Raw JSON**:
+   - Вставить `VLESS_JP` в `inbounds[]`
+   - Вставить `BRIDGE_JP` в `outbounds[]`
+   - Вставить routing-rule в `routing.rules[]`
    - Save
 
-2. Открой **Hosts → New Host**:
-   - Скопируй параметры из вывода скрипта (Address, Port, PublicKey, ShortId, SNI, FP, Mux=OFF)
-   - Привяжи к inbound `VLESS_JP`
+2. **Hosts → New Host**:
+   - Скопировать параметры (Address, Port, PublicKey, ShortId, SNI, FP)
+   - **Mux: OFF** (обязательно — несовместим с Vision)
    - Save
 
-### Шаг 5 — Refresh подписок
+### Шаг 5 — Подтверждение через probe
 
-Клиенты подхватят новый Host автоматически при следующем обновлении подписки (или принудительно через pull-to-refresh в Happp/v2rayNG).
+```bash
+# Снова на ENTRY:
+br
+# [2] Тест ОДНОЙ exit-ноды → 45.67.89.10
+```
+
+Должно стать `✅ отлично`.
+
+### Шаг 6 — Refresh подписки в Happp/v2rayNG
+
+Клиенты подхватят новый Host автоматически или принудительно через pull-to-refresh.
+
+---
+
+## Транспорты (выбор при деплое)
+
+При установке EXIT-ноды CLI спросит какой транспорт использовать:
+
+| Транспорт | Применение |
+|---|---|
+| **Reality+TCP+Vision** | По умолчанию, стандартный. Маскирует трафик под TLS-сайт. |
+| **Reality+xhttp** | Если клиенты Happp/sing-box страдают с UDP-DNS. xhttp туннелирует UDP в HTTP/2-стрим. |
+| **WireGuard** | Plain WG-туннель. Без Reality-маскировки на участке Aeza→exit. Хорошо если этот участок не через DPI. |
+
+---
+
+## Multi-bridge на одной EXIT-ноде
+
+CLI поддерживает **два сценария** подключения нескольких ENTRY-нод к одной EXIT:
+
+- **Общий мост** (по умолчанию) — все ENTRY используют один UUID и порт. Проще.
+- **Изолированный мост** — для каждой ENTRY поднимается отдельный контейнер `bridge-xray-N` на отдельном порту со своими ключами. Изоляция между проектами.
+
+Выбирается в меню `[4] Подключить вторую ENTRY-ноду`.
+
+---
+
+## ENV-переменные
+
+| Переменная | Где работает | Назначение |
+|---|---|---|
+| `BRIDGE_CREDS` | `install.sh` | base64-blob с ключами от первой EXIT |
+| `XRAY_IMAGE` | везде | Переопределить docker-образ xray (default: `ghcr.io/xtls/xray-core:latest`) |
+| `BRIDGE_CLI_HOME` | везде | Override каталога установки (default: `/opt/bridge-cli`) |
+| `PING_COUNT` | probe | Сколько ping-пакетов (default: 10) |
+| `BRIDGE_PORT` | `br probe` | Порт для проверки (default: 7443) |
+| `BRIDGE_REALITY_SNI` | `br probe` | Ожидаемый SNI Reality (default: `max.ru`) |
+
+---
+
+## Где что лежит
+
+```
+/opt/bridge-cli/
+├── bin/bridge-cli             # главный скрипт
+├── lib/*.sh                   # модули
+├── templates/                 # шаблоны конфигов
+├── etc/state.json             # состояние (gitignored)
+├── etc/generated/<cc>.json    # сохранённые блоки по странам
+└── etc/probe-history/         # история тестов (10 дней)
+
+/opt/bridge-xray/<bridge_name>/config.json  # config bridge-xray-контейнера
+```
 
 ---
 
 ## Безопасность
 
-- **Никогда** не помещай `BRIDGE_UUID`, `BRIDGE_REALITY_PRIV`, `BRIDGE_REALITY_SHORTID` в git
-- Передавай их только через ENV-переменные при запуске скрипта
-- Если ключи скомпрометированы — перегенерируй их и пере-разверни bridge-xray на ВСЕХ exit-нодах одновременно (а в Remnawave обнови outbound-блоки)
-- bridge-xray слушает на `0.0.0.0:7443` — можно ограничить через firewall только IP entry-ноды, если параноишь
+- `state.json`, `preinit-creds.json`, `etc/generated/`, `etc/probe-history/` НЕ коммитятся в git (`.gitignore`)
+- BRIDGE_CREDS — это секрет, не публикуйте
+- Если ключи моста утекли → перегенерировать на одной EXIT-ноде, экспортировать новые creds, переустановить на всех остальных + обновить outbound-блоки в Remnawave Config Profile
+- iperf3-сервер можно ограничить файрволом только IP ENTRY-нод (state.exit.iperf3.allowed_ips)
 
 ---
 
 ## Troubleshooting
 
-### bootstrap-exit.sh падает на `docker run xray x25519`
-Скрипт пытается сгенерить keypair через xray-image, но если pull-долго или fail — установи xray локально и сгенерь руками:
+### `br: command not found` после установки
+Симлинк не создался. Проверь:
 ```bash
-docker run --rm ghcr.io/xtls/xray-core:latest x25519
+ls -la /usr/local/bin/br
+ls -la /opt/bridge-cli/bin/bridge-cli
 ```
 
-### probe показывает ❌ unreachable но `ping OK`
-Это значит TCP/7443 закрыт. Проверь:
+### `docker: command not found`
 ```bash
-# На foreign-ноде:
+curl -fsSL https://get.docker.com | sh
+```
+
+### bridge-xray контейнер не запускается
+```bash
+docker logs bridge-xray-main
+# часто: невалидный JSON в config.json, или порт занят
+```
+
+### probe показывает `✗ недоступен` но ping ОК
+TCP/7443 закрыт. На EXIT-ноде:
+```bash
 ufw status | grep 7443
 docker ps | grep bridge-xray
-docker logs bridge-xray --tail 50
+docker logs bridge-xray-main --tail 50
 ```
 
-### probe показывает ⚠ wrong CN
-Открыт порт 7443, но отвечает не наш bridge — другой сервис на этом порту. Проверь `docker ps` и убей лишнее.
+### probe показывает `⚠ чужой Reality`
+Порт 7443 открыт, но отвечает не наш bridge-xray (другой сервис на этом порту). Освободить:
+```bash
+docker ps -a | grep 7443
+# kill conflict, restart bridge-xray
+```
 
-### Клиент не видит сайтов после добавления Host
+### Клиент не видит сайтов после добавления Host в Remnawave
 - Проверь что у Host **Mux: OFF** (Mux несовместим с Vision)
-- Проверь подписку: `curl https://<твой_sub_url>` — есть ли новый хост в base64-списке
-- Принудительно обнови подписку в клиенте (pull-to-refresh)
+- Принудительно обнови подписку (pull-to-refresh)
+- Проверь подписку: `curl 'https://<sub_url>'` — есть ли новый Host в base64
 
 ---
 
 ## Связанные проекты
 
 - [Remnawave](https://github.com/remnawave/backend) — панель управления нодами
-- [Xray-core](https://github.com/XTLS/Xray-core) — движок proxy
+- [Xray-core](https://github.com/XTLS/Xray-core) — proxy-движок
 
 ## Лицензия
 

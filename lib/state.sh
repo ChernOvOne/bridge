@@ -20,11 +20,31 @@ state_init_empty() {
     "client_configs": []
   },
   "entry": {
+    "bridge_credentials": null,
     "exit_nodes": []
   }
 }
 EOF
   fi
+  # Дозалить bridge_credentials поле если state.json уже существовал из старой версии
+  jq 'if .entry.bridge_credentials == null and (.entry | has("bridge_credentials") | not) then .entry.bridge_credentials = null else . end' \
+    "$STATE_FILE" > "$STATE_FILE.tmp" && mv "$STATE_FILE.tmp" "$STATE_FILE" 2>/dev/null || true
+}
+
+# ENTRY: сохранить общие bridge_credentials (используются при добавлении новых EXIT-нод)
+state_set_bridge_creds() {
+  local creds_json="$1"
+  local tmp
+  tmp=$(mktemp)
+  jq --argjson creds "$creds_json" '.entry.bridge_credentials = $creds' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+state_has_bridge_creds() {
+  jq -e '.entry.bridge_credentials != null' "$STATE_FILE" >/dev/null 2>&1
+}
+
+state_get_bridge_creds() {
+  jq -c '.entry.bridge_credentials' "$STATE_FILE"
 }
 
 state_exists() {

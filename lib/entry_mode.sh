@@ -16,6 +16,13 @@ entry_main_menu() {
     printf "  Последний тест:        %s\n" "$last_probe_ts"
     divider
 
+    local creds_status
+    if state_has_bridge_creds; then creds_status="$(c_grn '✓ настроены')"
+    else creds_status="$(c_red '✗ не настроены')"
+    fi
+    printf "  Bridge credentials:    %s\n" "$creds_status"
+    divider
+
     cat <<EOF
   [1]  Управление exit-нодами (добавить / удалить / редактировать)
   [2]  Тест ОДНОЙ exit-ноды
@@ -23,7 +30,8 @@ entry_main_menu() {
   [4]  Тест скорости (iperf3)
   [5]  История тестов (последние 10 дней)
   [6]  Самодиагностика этой ENTRY-ноды
-  [7]  Сгенерировать xray-блоки для Remnawave
+  [7]  Просмотр сгенерированных JSON-блоков по странам
+  [8]  Bridge credentials (импорт/просмотр/экспорт)
   ─────────────────────────────────────────────────────────────
   [9]  Обновить bridge-cli из GitHub
   [0]  Выход
@@ -36,7 +44,8 @@ EOF
       4) entry_iperf3 ;;
       5) entry_show_history ;;
       6) entry_self_diag ;;
-      7) entry_generate_blocks ;;
+      7) entry_show_generated ;;
+      8) entry_credentials_menu ;;
       9) update_from_git ;;
       0) exit 0 ;;
       *) err "Неверный выбор"; sleep 1 ;;
@@ -84,43 +93,210 @@ EOF
 
 entry_add_node() {
   step "Добавление новой exit-ноды"
+
+  # 0. Убедиться что у ENTRY есть bridge_credentials
+  if ! state_has_bridge_creds; then
+    err "Нет общих bridge-credentials в state.json"
+    info "Добавь их сначала: главное меню → '8' Bridge credentials → '1' Импортировать"
+    pause; return
+  fi
+
+  # 1. Базовые параметры
   prompt "IP exit-ноды"
   local ip="$REPLY"
   [ -z "$ip" ] && { err "IP обязателен"; pause; return; }
-  prompt "Код страны (de/fr/nl/us/...)"
+  prompt "Код страны (de/fr/nl/us/jp...)"
   local cc; cc=$(echo "${REPLY:-}" | tr '[:upper:]' '[:lower:]')
   [ -z "$cc" ] && { err "Код страны обязателен"; pause; return; }
-  prompt "Порт bridge-xray" "7443"
-  local bport="$REPLY"
-  prompt "Порт iperf3-сервера (0 если не используется)" "5201"
-  local iport="$REPLY"
-
-  local transports=("reality" "xhttp" "wg")
-  menu_select "Тип транспорта на этой exit-ноде:" "Reality+TCP+Vision" "Reality+xhttp" "WireGuard"
-  local tr="${transports[$MENU_REPLY]}"
-
+  local cc_upper; cc_upper=$(echo "$cc" | tr '[:lower:]' '[:upper:]')
   local cn; cn=$(country_name "$cc")
+  prompt "Свободный TCP-порт на entry для inbound VLESS_${cc_upper}" "8449"
+  local entry_port="$REPLY"
+  local default_sni; default_sni=$(client_sni_for_country "$cc")
+  prompt "SNI клиентского inbound (Reality-маскировка)" "$default_sni"
+  local client_sni="$REPLY"
 
-  step "Запускаю probe (займёт ~10 сек)"
-  local res
-  res=$(probe_one "$ip" "$bport" "max.ru")
-  print_probe_header
-  print_probe_row "$res"
-  local verdict
-  verdict=$(echo "$res" | jq -r .verdict)
-  if [ "$verdict" = "unreachable" ]; then
-    if ! confirm "Нода НЕ доступна. Всё равно добавить?" "n"; then
-      pause; return
-    fi
+  local creds; creds=$(state_get_bridge_creds)
+  local b; b=$(echo "$creds" | jq -c '.bridges[0]')
+  local bport iport
+  bport=$(echo "$b" | jq -r .port)
+  iport=$(echo "$creds" | jq -r '.iperf3.port // 0')
+
+  # 2. Soft-probe: ping и MTU (НЕ 7443 — он ещё не открыт на новой ноде)
+  step "Проверка доступности по сети (ping/MTU)"
+  local ping_out loss rtt
+  ping_out=$(ping -c 4 -W 2 -q "$ip" 2>/dev/null || true)
+  loss=$(echo "$ping_out" | awk -F', ' '/packet loss/ {gsub("% packet loss","",$3); print $3}')
+  rtt=$(echo  "$ping_out" | awk -F'/' '/rtt|round-trip/ {printf "%.0fms",$5}')
+  [ -z "$loss" ] && loss="?" ; [ -z "$rtt" ] && rtt="?"
+  if [ "$loss" = "100" ] || [ "$loss" = "?" ]; then
+    err "$ip не отвечает на ping ($loss% loss). Проверь IP и доступность."
+    if ! confirm "Всё равно продолжить?" "n"; then return; fi
+  else
+    ok "Ping OK: loss=${loss}%, RTT=${rtt}"
   fi
 
+  # 3. Генерируем client-side Reality keypair для inbound
+  step "Генерирую уникальный client-side Reality keypair для VLESS_${cc_upper}"
+  local kp client_priv client_pub client_shortid
+  kp=$(gen_x25519) || { err "Не смог сгенерить keypair (нет docker?)"; pause; return; }
+  client_priv=$(echo "$kp" | sed -n '1p')
+  client_pub=$(echo  "$kp" | sed -n '2p')
+  client_shortid=$(openssl rand -hex 8)
+  ok "PrivateKey: $client_priv"
+  ok "PublicKey:  $client_pub"
+  ok "ShortId:    $client_shortid"
+
+  # 4. Параметры моста (общие)
+  local b_uuid b_priv b_pub b_sid b_sni b_dest
+  b_uuid=$(echo "$b" | jq -r .uuid)
+  b_priv=$(echo "$b" | jq -r .reality_priv)
+  b_pub=$(echo  "$b" | jq -r .reality_pub)
+  b_sid=$(echo  "$b" | jq -r .reality_shortid)
+  b_sni=$(echo  "$b" | jq -r .reality_sni)
+  b_dest=$(echo "$b" | jq -r .reality_dest)
+  local b_tr; b_tr=$(echo "$b" | jq -r .transport)
+
+  # 5. Сохранить в инвентарь
   state_append '.entry.exit_nodes' "$(jq -n \
     --arg cc "$cc" --arg cn "$cn" --arg ip "$ip" \
-    --argjson bp "$bport" --argjson ip3 "$iport" --arg tr "$tr" \
+    --argjson bp "$bport" --argjson ip3 "$iport" --arg tr "$b_tr" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{country:$cc, country_name:$cn, ip:$ip, bridge_port:$bp, iperf3_port:$ip3, transport:$tr, added_at:$ts}')"
-  ok "Добавлено: $cn ($ip)"
+
+  # 6. Сохранить сгенерированный client-config (для повторного просмотра)
+  state_append '.exit.client_configs' "$(jq -n \
+    --arg cc "$cc" --arg cn "$cn" --arg entry_ip "$(_entry_ip)" --argjson entry_port "$entry_port" \
+    --arg client_sni "$client_sni" --arg priv "$client_priv" --arg pub "$client_pub" --arg sid "$client_shortid" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg bname "main" --arg exit_ip "$ip" \
+    '{country:$cc, country_name:$cn, entry_ip:$entry_ip, entry_port:$entry_port, exit_ip:$exit_ip,
+      client_sni:$client_sni, client_priv:$priv, client_pub:$pub, client_shortid:$sid,
+      created_at:$ts, bridge_name:$bname}')"
+
+  # 7. Сгенерировать BRIDGE_CREDS base64 для команды на новой EXIT-ноде
+  local creds_b64
+  creds_b64=$(echo "$creds" | base64 -w0)
+
+  # 8. Создать готовый файл с JSON-блоками
+  mkdir -p "$STATE_DIR/generated"
+  local out_file="$STATE_DIR/generated/${cc}.txt"
+  _write_generated_blocks "$out_file" "$cc" "$cc_upper" "$cn" "$ip" "$entry_port" "$client_sni" \
+    "$client_priv" "$client_pub" "$client_shortid" \
+    "$b_uuid" "$b_pub" "$b_sid" "$b_sni" "$bport"
+
+  # 9. Распечатать инструкцию пользователю
+  clear
+  header "✅ Добавлена exit-нода: ${cn} (${ip})"
+  printf "\n%s\n\n" "$(c_bold 'ШАГ 1 — Запусти на новой EXIT-ноде следующую команду:')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  cat <<EOF
+ssh root@${ip}
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
+  BRIDGE_CREDS='${creds_b64}' bash
+EOF
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  printf "%s\n" "$(c_yel '↑ Эта команда автоматически:')"
+  printf "  • поставит Docker (если нет)\n"
+  printf "  • поднимет bridge-xray на :%s с твоими общими ключами моста\n" "$bport"
+  printf "  • поднимет iperf3-server на :%s\n" "$iport"
+  printf "  • откроет порты в firewall\n\n"
+  printf "%s\n\n" "$(c_bold 'ШАГ 2 — После выполнения команды на EXIT-ноде:')"
+  printf "  1. Добавь JSON-блоки в Remnawave panel (Config Profile + Host).\n"
+  printf "     Все блоки сохранены в файле: %s\n\n" "$(c_bold "$out_file")"
+  printf "  2. Запусти повторный probe: главное меню → [2] Тест ОДНОЙ exit-ноды.\n\n"
   pause
+}
+
+# Helper: внешний IP этой ENTRY-ноды
+_entry_ip() {
+  curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+# Helper: дефолтный SNI для страны
+client_sni_for_country() {
+  case "$1" in
+    us|usa)   echo "amazon.com" ;;
+    uk|gb)    echo "bbc.co.uk" ;;
+    fr)       echo "wildberries.ru" ;;
+    de)       echo "vk.com" ;;
+    nl)       echo "ozon.ru" ;;
+    pl)       echo "yandex.ru" ;;
+    kz|kzz)   echo "kaspi.kz" ;;
+    ru)       echo "rambler.ru" ;;
+    jp)       echo "rakuten.co.jp" ;;
+    sg)       echo "shopee.sg" ;;
+    fi)       echo "yle.fi" ;;
+    se)       echo "svt.se" ;;
+    *)        echo "cloudflare.com" ;;
+  esac
+}
+
+# Helper: записать готовые JSON-блоки + Host-параметры в файл
+_write_generated_blocks() {
+  local file="$1" cc="$2" cc_upper="$3" cn="$4" exit_ip="$5" entry_port="$6" client_sni="$7"
+  local client_priv="$8" client_pub="$9" client_shortid="${10}"
+  local b_uuid="${11}" b_pub="${12}" b_sid="${13}" b_sni="${14}" bridge_port="${15}"
+  local entry_ip; entry_ip=$(_entry_ip)
+  cat > "$file" <<EOF
+╔══════════════════════════════════════════════════════════════════╗
+║ Bridge-xray развёрнут на ${exit_ip}:${bridge_port}
+║ Страна: ${cn} (${cc_upper})
+║ Сгенерировано: $(date -u +"%Y-%m-%d %H:%M UTC")
+╚══════════════════════════════════════════════════════════════════╝
+
+━━━ В Remnawave Config Profile → "inbounds" массив ━━━
+{
+  "tag": "VLESS_${cc_upper}",
+  "port": ${entry_port},
+  "listen": "0.0.0.0",
+  "protocol": "vless",
+  "settings": {"clients": [], "decryption": "none", "flow": ""},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "streamSettings": {
+    "network": "tcp", "security": "reality",
+    "realitySettings": {
+      "dest": "${client_sni}:443", "show": false, "xver": 0,
+      "shortIds": ["${client_shortid}"],
+      "privateKey": "${client_priv}",
+      "serverNames": ["${client_sni}"]
+    }
+  }
+}
+
+━━━ В "outbounds" массив ━━━
+{
+  "tag": "BRIDGE_${cc_upper}", "protocol": "vless",
+  "settings": {"vnext": [{
+    "address": "${exit_ip}", "port": ${bridge_port},
+    "users": [{"id": "${b_uuid}", "flow": "xtls-rprx-vision", "encryption": "none"}]
+  }]},
+  "streamSettings": {
+    "network": "tcp", "security": "reality",
+    "realitySettings": {
+      "show": false, "shortId": "${b_sid}", "spiderX": "",
+      "publicKey": "${b_pub}",
+      "serverName": "${b_sni}", "fingerprint": "chrome"
+    }
+  }
+}
+
+━━━ В "routing.rules" массив ━━━
+{"type": "field", "inboundTag": ["VLESS_${cc_upper}"], "outboundTag": "BRIDGE_${cc_upper}"}
+
+━━━ Создай Host в Remnawave UI → Hosts → New Host ━━━
+  Remark:       ${cn} Тест
+  Inbound:      VLESS_${cc_upper}
+  Address:      ${entry_ip}
+  Port:         ${entry_port}
+  SNI:          ${client_sni}
+  PublicKey:    ${client_pub}
+  ShortId:      ${client_shortid}
+  Fingerprint:  chrome
+  Security:     reality
+  Network:      tcp
+  Flow:         (пусто)
+  Mux:          OFF (обязательно)
+EOF
 }
 
 entry_delete_node() {
@@ -263,49 +439,131 @@ entry_self_diag() {
 }
 
 # [7] Сгенерировать xray-блоки
-entry_generate_blocks() {
-  header "Генерация xray-блоков для Remnawave"
-  local count; count=$(state_count '.entry.exit_nodes')
-  if [ "$count" -eq 0 ]; then
-    info "Сначала добавьте exit-ноды через [1]."
+# [7] Просмотр сгенерированных блоков по странам (файлы etc/generated/<cc>.txt)
+entry_show_generated() {
+  header "Сгенерированные JSON-блоки по странам"
+  local gendir="$STATE_DIR/generated"
+  mkdir -p "$gendir"
+  local files; files=("$gendir"/*.txt)
+  if [ ! -e "${files[0]}" ]; then
+    info "Файлов нет. Они создаются автоматически при добавлении exit-ноды через [1]."
     pause; return
   fi
-  cat <<EOF
+  local items=()
+  for f in "${files[@]}"; do
+    items+=("$(basename "$f" .txt)")
+  done
+  items+=("← Назад")
+  menu_select "Выберите страну для просмотра блоков:" "${items[@]}"
+  local idx="$MENU_REPLY"
+  if [ "$idx" -eq "$((${#items[@]} - 1))" ]; then return; fi
+  clear
+  cat "$gendir/${items[$idx]}.txt"
+  echo
+  pause
+}
 
-  ${C_YEL}Внимание:${C_RST} это работает только для exit-нод, развёрнутых через bridge-cli.
-  Нам нужен PublicKey моста, который вы получили при создании ноды через
-  пункт «Подключить вторую ENTRY-ноду» (вариант 'изолированный') или
-  при первичном init exit-ноды.
-
-  Введите параметры моста (одинаковые для всех узлов если общий мост):
-
+# [8] Bridge credentials submenu
+entry_credentials_menu() {
+  while true; do
+    clear
+    header "Bridge credentials"
+    if state_has_bridge_creds; then
+      local b; b=$(state_get_bridge_creds | jq -c '.bridges[0]')
+      printf "  Статус:   %s\n" "$(c_grn 'настроены')"
+      printf "  UUID:     %s\n" "$(echo "$b" | jq -r .uuid)"
+      printf "  Pub-key:  %s\n" "$(echo "$b" | jq -r .reality_pub)"
+      printf "  ShortId:  %s\n" "$(echo "$b" | jq -r .reality_shortid)"
+      printf "  SNI:      %s\n" "$(echo "$b" | jq -r .reality_sni)"
+      printf "  Port:     %s\n" "$(echo "$b" | jq -r .port)"
+    else
+      printf "  Статус:   %s\n" "$(c_red 'не настроены')"
+      printf "  %s\n" "Bridge-credentials нужны для добавления новых exit-нод одной"
+      printf "  %s\n" "командой. Это общие UUID + Reality-keys которые используются"
+      printf "  %s\n" "на всех твоих exit-нодах одновременно."
+    fi
+    divider
+    cat <<EOF
+  [1]  Импортировать из base64-строки (от другой ноды)
+  [2]  Импортировать вводом полей вручную
+  [3]  Экспорт (base64-строка для другой ENTRY)
+  [4]  Удалить
+  [0]  Назад
 EOF
-  prompt "BRIDGE_UUID (общий UUID моста)"
-  local b_uuid="$REPLY"
-  prompt "BRIDGE_PUBLIC_KEY (Reality public key моста)"
-  local b_pub="$REPLY"
-  prompt "BRIDGE_SHORTID (Reality short ID моста)" "61dfff54"
-  local b_sid="$REPLY"
-  prompt "BRIDGE_SNI" "max.ru"
-  local b_sni="$REPLY"
+    read -r -p "$(c_bold 'Выбор'): " act
+    case "$act" in
+      1) entry_creds_import_b64 ;;
+      2) entry_creds_import_manual ;;
+      3) entry_creds_export ;;
+      4) entry_creds_delete ;;
+      0) return ;;
+      *) err "Неверный выбор"; sleep 1 ;;
+    esac
+  done
+}
 
-  while IFS= read -r row; do
-    local ip cc cn port
-    ip=$(echo "$row" | jq -r .ip)
-    cc=$(echo "$row" | jq -r .country | tr '[:lower:]' '[:upper:]')
-    cn=$(echo "$row" | jq -r .country_name)
-    port=$(echo "$row" | jq -r .bridge_port)
-    printf "\n%s\n" "$(c_bold "▸ BRIDGE_${cc}  ($cn — $ip:$port)")"
-    jq -n --arg tag "BRIDGE_${cc}" --arg addr "$ip" --argjson port "$port" \
-      --arg uuid "$b_uuid" --arg pub "$b_pub" --arg sid "$b_sid" --arg sni "$b_sni" \
-      '{
-        tag:$tag, protocol:"vless",
-        settings:{vnext:[{address:$addr,port:$port,users:[{id:$uuid,flow:"xtls-rprx-vision",encryption:"none"}]}]},
-        streamSettings:{network:"tcp",security:"reality",realitySettings:{show:false,shortId:$sid,spiderX:"",publicKey:$pub,serverName:$sni,fingerprint:"chrome"}}
-      }'
-    printf "\n%s\n" "$(c_bold "▸ routing rule для VLESS_${cc} → BRIDGE_${cc}")"
-    jq -n --arg ib "VLESS_${cc}" --arg ob "BRIDGE_${cc}" '{type:"field",inboundTag:[$ib],outboundTag:$ob}'
-  done < <(jq -c '.entry.exit_nodes[]' "$STATE_FILE")
+entry_creds_import_b64() {
+  step "Импорт credentials из base64-строки"
+  printf "Вставьте base64-строку (одна строка, заканчивается Enter):\n"
+  local b64
+  read -r b64
+  local decoded
+  decoded=$(echo "$b64" | base64 -d 2>/dev/null)
+  if [ -z "$decoded" ] || ! echo "$decoded" | jq -e '.bridges[0].uuid' >/dev/null 2>&1; then
+    err "Не валидный base64 или не валидный JSON структуры credentials"
+    pause; return
+  fi
+  state_set_bridge_creds "$decoded"
+  ok "Bridge-credentials импортированы"
+  pause
+}
 
+entry_creds_import_manual() {
+  step "Ввод credentials вручную"
+  prompt "BRIDGE_UUID"
+  local uuid="$REPLY"
+  prompt "Reality PrivateKey (приватник моста, нужен только если деплоим bridge с этой ноды; иначе пробел)"
+  local priv="${REPLY:- }"
+  prompt "Reality PublicKey (публичник моста — обязателен)"
+  local pub="$REPLY"
+  prompt "Reality ShortId моста" "61dfff54"
+  local sid="$REPLY"
+  prompt "Reality SNI моста" "max.ru"
+  local sni="$REPLY"
+  prompt "Reality dest моста" "max.ru:443"
+  local dest="$REPLY"
+  prompt "Bridge-port" "7443"
+  local port="$REPLY"
+  if [ -z "$uuid" ] || [ -z "$pub" ]; then
+    err "UUID и PublicKey обязательны"
+    pause; return
+  fi
+  local creds
+  creds=$(jq -n --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" \
+                --arg sni "$sni" --arg dest "$dest" --argjson port "$port" \
+    '{bridges:[{name:"main",port:$port,transport:"reality",uuid:$uuid,reality_priv:$priv,reality_pub:$pub,reality_shortid:$sid,reality_sni:$sni,reality_dest:$dest}],
+      iperf3:{enabled:true,port:5201,allowed_ips:[]}}')
+  state_set_bridge_creds "$creds"
+  ok "Bridge-credentials сохранены"
+  pause
+}
+
+entry_creds_export() {
+  if ! state_has_bridge_creds; then err "Сначала импортируйте credentials"; pause; return; fi
+  local b64
+  b64=$(state_get_bridge_creds | base64 -w0)
+  clear
+  header "Экспорт bridge-credentials"
+  printf "\n%s\n\n" "$(c_yel 'Скопируйте эту строку и передайте на другую ENTRY-ноду (br → [8] → [1]):')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  printf "%s\n" "$b64"
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  pause
+}
+
+entry_creds_delete() {
+  if ! confirm "Точно удалить bridge-credentials?" "n"; then return; fi
+  state_set '.entry.bridge_credentials = null'
+  ok "Удалено"
   pause
 }

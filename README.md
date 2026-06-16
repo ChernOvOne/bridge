@@ -6,11 +6,29 @@
 
 Одной командой на любой Linux-ноде (root, apt/dnf/yum/apk):
 
+**Вариант 1 — git clone (рекомендуется, самый надёжный):**
+```bash
+rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src && bash /tmp/bridge-src/install.sh
+```
+
+**Вариант 2 — curl | bash (если хостер не блокирует raw.githubusercontent.com):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | bash
 ```
 
-Что произойдёт:
+**Вариант 3 — двух-шаговый (если pipe зависает):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh -o /tmp/inst.sh && bash /tmp/inst.sh
+```
+
+**Вариант 4 — через wget:**
+```bash
+wget -qO- https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | bash
+```
+
+> 💡 На многих хостингах (RuVDS, ptr.network, etc.) `raw.githubusercontent.com` блокируется — тогда варианты 2/3/4 не сработают, но **git clone всегда работает**. Поэтому он первый в списке.
+
+Что произойдёт при любом варианте:
 
 1. Обновляется система (`apt upgrade` / аналог)
 2. Ставятся зависимости: `jq dialog openssl curl iperf3 git ca-certificates`
@@ -23,13 +41,29 @@ curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh |
 
 ### Установка дополнительной EXIT-ноды (с уже существующими credentials)
 
-На первой EXIT-ноде запусти в меню пункт `[3] Экспорт credentials` — получишь готовую строку. Запусти её на новой EXIT-ноде:
+На первой EXIT-ноде (или ENTRY-ноде) в меню → **«Экспорт credentials»** — получишь готовую строку. Запусти её на новой EXIT-ноде:
 
+**Рекомендуемый способ — git clone + creds:**
+```bash
+rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='<base64-blob>' bash /tmp/bridge-src/install.sh
+```
+
+Или через curl (если хостер пропускает):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='<base64-blob>' bash
 ```
 
 Скрипт распакует ключи, развернёт bridge-xray с теми же UUID/Reality-keys, добавит к общему мосту.
+
+### Ещё проще — через `br` на ENTRY-ноде
+
+Если у тебя уже есть ENTRY-нода с установленным `br`, добавь exit-ноду через меню:
+```
+br → [1] Управление exit-нодами → [1] Добавить
+```
+
+CLI попросит IP/код страны/порт, сам сгенерит client-keypair, **распечатает 4 варианта установочной команды** для копи-пасты на новой ноде и сохранит их в файл `/opt/bridge-cli/etc/generated/<cc>-install-cmd.sh` (можно скопировать через scp).
 
 ---
 
@@ -120,12 +154,20 @@ br
 
 ### Шаг 2 — На JP-ноде
 
+Рекомендуемый способ (git clone — обходит блокировки):
+```bash
+ssh root@45.67.89.10
+rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='<creds>' bash /tmp/bridge-src/install.sh
+```
+
+Или через curl если хостер пропускает:
 ```bash
 ssh root@45.67.89.10
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='<creds>' bash
 ```
 
-(Где `<creds>` — то что выдал `[3] Экспорт credentials` на первой EXIT-ноде.)
+(Где `<creds>` — то что выдал «Экспорт credentials» в меню.)
 
 ### Шаг 3 — Создать конфиг страны (на JP-ноде)
 

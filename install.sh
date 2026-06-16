@@ -5,6 +5,12 @@
 #   curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='base64' bash
 set -euo pipefail
 
+# При запуске через `curl | bash` stdin занят пайпом → интерактивный read получит EOF.
+# Переоткрываем stdin как TTY, если она доступна.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+  exec < /dev/tty
+fi
+
 INSTALL_DIR="/opt/bridge-cli"
 REPO_URL="https://github.com/ChernOvOne/bridge.git"
 BRANCH="main"
@@ -110,4 +116,9 @@ fi
 
 step "Запуск 'br init' для настройки роли"
 echo
-exec /usr/local/bin/br init
+if [ -t 0 ] || [ -e /dev/tty ]; then
+  exec /usr/local/bin/br init
+else
+  warn "stdin недоступен (cron/headless) — запусти 'br init' вручную в интерактивной сессии"
+  exit 0
+fi

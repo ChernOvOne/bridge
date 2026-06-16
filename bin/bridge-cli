@@ -2,6 +2,12 @@
 # bin/bridge-cli — главный диспетчер. Запускается командой `br`.
 set -euo pipefail
 
+# Если stdin не TTY (например, нас вызвали из `curl ... | bash`) — переоткроем TTY,
+# иначе все интерактивные `read` получат EOF и меню моментально закроется.
+if [ ! -t 0 ] && [ -e /dev/tty ]; then
+  exec < /dev/tty
+fi
+
 # Определить home (если установлен симлинком — нужен реальный путь)
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 while [ -L "$SCRIPT_PATH" ]; do

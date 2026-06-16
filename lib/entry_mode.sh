@@ -175,18 +175,16 @@ entry_probe_all() {
   local count; count=$(state_count '.entry.exit_nodes')
   if [ "$count" -eq 0 ]; then info "Список пуст"; pause; return; fi
 
-  print_probe_header
+  print_probe_header with_cn
   local results="["
   local first=1
   while IFS= read -r row; do
-    local ip port cn
+    local ip port cc
     ip=$(echo "$row"   | jq -r .ip)
     port=$(echo "$row" | jq -r .bridge_port)
-    cn=$(echo "$row"   | jq -r .country_name)
+    cc=$(echo "$row"   | jq -r .country)
     local res; res=$(probe_one "$ip" "$port" "max.ru")
-    # Добавим название страны в строку перед IP
-    printf "  %s " "$(c_cyn "$cn")"
-    print_probe_row "$res"
+    print_probe_row "$res" "$cc"
     if [ "$first" -eq 1 ]; then results="$results$res"; first=0
     else results="$results,$res"; fi
   done < <(jq -c '.entry.exit_nodes[]' "$STATE_FILE")

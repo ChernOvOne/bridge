@@ -80,6 +80,7 @@ probe_one() {
 # Красивая печать одной строки результата
 print_probe_row() {
   local row_json="$1"
+  local cn_prefix="${2:-}"
   local ip loss rtt tcp tls mtu verdict
   ip=$(echo "$row_json"      | jq -r .ip)
   loss=$(echo "$row_json"    | jq -r .loss)
@@ -112,15 +113,31 @@ print_probe_row() {
   elif [ "$tls" = "—" ]; then tls_c="—"
   else tls_c="$(c_red "$tls")"; fi
 
-  printf "  %-18s  %-5s  %-7s  %-12s  %-15s  %-5s  %b\n" \
-    "$ip" "$loss" "$rtt" "$tcp_c" "$tls_c" "$mtu" "$v_str"
+  if [ -n "$cn_prefix" ]; then
+    # Префикс страны фиксированной ширины (3 ascii char + скобки = 5 чар)
+    local cc_padded
+    cc_padded=$(printf "[%-3s]" "$(echo "$cn_prefix" | tr '[:lower:]' '[:upper:]')")
+    printf "  %s  %-18s  %-5s  %-7s  %-12s  %-15s  %-5s  %b\n" \
+      "$cc_padded" "$ip" "$loss" "$rtt" "$tcp_c" "$tls_c" "$mtu" "$v_str"
+  else
+    printf "  %-18s  %-5s  %-7s  %-12s  %-15s  %-5s  %b\n" \
+      "$ip" "$loss" "$rtt" "$tcp_c" "$tls_c" "$mtu" "$v_str"
+  fi
 }
 
 print_probe_header() {
-  printf "\n  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
-    "IP" "loss" "RTT" "Порт" "Reality" "MTU" "Вердикт"
-  printf "  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
-    "------------------" "-----" "-------" "-----" "---------" "-----" "----------"
+  local with_cn="${1:-}"
+  if [ "$with_cn" = "with_cn" ]; then
+    printf "\n  %-5s  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
+      "Стр." "IP" "loss" "RTT" "Порт" "Reality" "MTU" "Вердикт"
+    printf "  %-5s  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
+      "-----" "------------------" "-----" "-------" "-----" "---------" "-----" "----------"
+  else
+    printf "\n  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
+      "IP" "loss" "RTT" "Порт" "Reality" "MTU" "Вердикт"
+    printf "  %-18s  %-5s  %-7s  %-5s  %-9s  %-5s  %s\n" \
+      "------------------" "-----" "-------" "-----" "---------" "-----" "----------"
+  fi
 }
 
 # Сохранить результаты в файл истории

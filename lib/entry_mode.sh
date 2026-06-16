@@ -68,16 +68,16 @@ entry_manage_nodes() {
     fi
     divider
     cat <<EOF
-  [a]  Добавить новую exit-ноду
-  [d]  Удалить exit-ноду
-  [b]  Назад
+  [1]  Добавить новую exit-ноду
+  [2]  Удалить exit-ноду
+  [0]  Назад
 EOF
     read -r -p "$(c_bold 'Выбор'): " act
     case "$act" in
-      a|A) entry_add_node ;;
-      d|D) entry_delete_node ;;
-      b|B) return ;;
-      *)   err "Неверный выбор"; sleep 1 ;;
+      1) entry_add_node ;;
+      2) entry_delete_node ;;
+      0) return ;;
+      *) err "Неверный выбор"; sleep 1 ;;
     esac
   done
 }

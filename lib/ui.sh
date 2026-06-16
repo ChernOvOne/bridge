@@ -52,7 +52,6 @@ prompt() {
   if [ -z "$REPLY" ] && [ -n "$default" ]; then
     REPLY="$default"
   fi
-  printf "%s" "$REPLY"
 }
 
 # confirm "Продолжить?" "y" → возвращает 0/1

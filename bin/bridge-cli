@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/bridge-cli — главный диспетчер. Запускается командой `br`.
-set -euo pipefail
+set -uo pipefail
 
 # Если stdin не TTY (например, нас вызвали из `curl ... | bash`) — переоткроем TTY,
 # иначе все интерактивные `read` получат EOF и меню моментально закроется.

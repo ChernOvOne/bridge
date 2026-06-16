@@ -3,7 +3,7 @@
 # Использование:
 #   curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | BRIDGE_CREDS='base64' bash
-set -euo pipefail
+set -uo pipefail
 
 # При запуске через `curl | bash` stdin занят пайпом → интерактивный read получит EOF.
 # Переоткрываем stdin как TTY, если она доступна.

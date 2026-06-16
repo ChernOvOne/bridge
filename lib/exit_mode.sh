@@ -46,7 +46,8 @@ exit_main_menu() {
   [3]  Перезапустить bridge-xray
   [4]  Экспорт credentials (для разворачивания на другой EXIT-ноде)
   [5]  Подключить вторую ENTRY-ноду (multi-tenant мост)
-  [6]  Переустановить / удалить мост
+  [6]  Переустановить / удалить ОДИН мост
+  [7]  ПОЛНОЕ УДАЛЕНИЕ (снести ВСЁ: bridge-cli + контейнеры + конфиги)
   ─────────────────────────────────────────────────────────────
   [9]  Обновить bridge-cli из GitHub
   [0]  Выход
@@ -59,6 +60,7 @@ EOF
       4) exit_export_creds ;;
       5) exit_add_entry_node ;;
       6) exit_uninstall_menu ;;
+      7) confirm_full_uninstall ;;
       9) update_from_git ;;
       0) exit 0 ;;
       *) err "Неверный выбор"; sleep 1 ;;

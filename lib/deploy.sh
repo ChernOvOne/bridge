@@ -281,6 +281,75 @@ uninstall_bridge() {
 }
 
 uninstall_iperf3() {
-  docker rm -f bridge-iperf3 2>/dev/null || true
+  docker rm -f bridge-iperf3 iperf3-server 2>/dev/null || true
   ok "iperf3-сервер удалён"
+}
+
+# Полное удаление: контейнеры + bridge-cli + симлинк + конфиги
+full_uninstall() {
+  step "Сношу ВСЕ docker-контейнеры bridge-xray-*"
+  for c in $(docker ps -aq --filter "name=bridge-xray-" 2>/dev/null); do
+    docker rm -f "$c" >/dev/null 2>&1 || true
+  done
+  ok "Все bridge-xray-* удалены"
+
+  step "Сношу iperf3-server"
+  docker rm -f bridge-iperf3 iperf3-server 2>/dev/null || true
+  ok "iperf3 удалён"
+
+  step "Удаляю конфиги в /opt/bridge-xray"
+  rm -rf /opt/bridge-xray
+  ok "/opt/bridge-xray удалён"
+
+  step "Закрываю firewall-порты"
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    for p in 7443 5201 7444 7445 7446 7447; do
+      ufw delete allow "$p/tcp" >/dev/null 2>&1 || true
+    done
+    ok "UFW: удалены allow-правила"
+  elif command -v iptables >/dev/null 2>&1; then
+    for p in 7443 5201 7444 7445 7446 7447; do
+      iptables -D INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+    done
+    ok "iptables: удалены правила"
+  fi
+
+  step "Удаляю симлинк /usr/local/bin/br"
+  rm -f /usr/local/bin/br
+  ok "Симлинк удалён"
+
+  step "Удаляю /opt/bridge-cli (всё состояние + конфиги + history)"
+  warn "Это удалит state.json, generated/, probe-history/ — восстановить нельзя."
+  rm -rf /opt/bridge-cli
+  ok "/opt/bridge-cli удалён"
+
+  printf "\n%s\n\n" "$(c_grn '✓ Полное удаление завершено. bridge-cli больше нет на этой ноде.')"
+  printf "%s\n" "Чтобы поставить заново:"
+  printf "  %s\n\n" "$(c_cyn 'rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src && bash /tmp/bridge-src/install.sh')"
+}
+
+# Двойное подтверждение + вызов full_uninstall
+confirm_full_uninstall() {
+  clear
+  header "⚠ ПОЛНОЕ УДАЛЕНИЕ"
+  printf "\n%s\n\n" "$(c_red 'ВНИМАНИЕ! Это удалит ВСЁ:')"
+  printf "  • все docker-контейнеры bridge-xray-*\n"
+  printf "  • контейнер iperf3-server\n"
+  printf "  • /opt/bridge-cli (state.json, generated/, probe-history/)\n"
+  printf "  • /opt/bridge-xray (config + docker-compose)\n"
+  printf "  • симлинк /usr/local/bin/br\n"
+  printf "  • firewall-правила для портов 7443/5201/7444-7447\n\n"
+  printf "%s\n\n" "$(c_yel 'Docker, jq, openssl и прочие зависимости останутся в системе.')"
+  if ! confirm "Точно снести bridge-cli и все его данные?" "n"; then
+    return
+  fi
+  printf "\n"
+  prompt "Для подтверждения введи слово УДАЛИТЬ"
+  if [ "$REPLY" != "УДАЛИТЬ" ]; then
+    err "Не подтверждено. Удаление отменено."
+    pause; return
+  fi
+  full_uninstall
+  pause
+  exit 0
 }

@@ -32,6 +32,7 @@ entry_main_menu() {
   [6]  Самодиагностика этой ENTRY-ноды
   [7]  Просмотр сгенерированных JSON-блоков по странам
   [8]  Bridge credentials (импорт/просмотр/экспорт)
+  [10] ПОЛНОЕ УДАЛЕНИЕ (снести ВСЁ: bridge-cli + конфиги + history)
   ─────────────────────────────────────────────────────────────
   [9]  Обновить bridge-cli из GitHub
   [0]  Выход
@@ -46,6 +47,7 @@ EOF
       6) entry_self_diag ;;
       7) entry_show_generated ;;
       8) entry_credentials_menu ;;
+      10) confirm_full_uninstall ;;
       9) update_from_git ;;
       0) exit 0 ;;
       *) err "Неверный выбор"; sleep 1 ;;

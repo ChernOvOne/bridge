@@ -32,7 +32,7 @@ exit_main_menu() {
           status="$(c_red 'остановлен')"
         fi
         printf "    %s «%s» — порт %s, транспорт %s, статус: %s\n" "$(c_cyn '•')" "$bname" "$bport" "$btr" "$status"
-      done < <(state_get_raw '.exit.bridges[]')
+      done < <(jq -c '.exit.bridges[]' "$STATE_FILE" 2>/dev/null)
     fi
     printf "  iperf3-сервер:         %s\n" "$([ "$iperf3_on" = "true" ] && c_grn включён || c_yel выключен)"
     printf "  Стран в подписке:      %s\n" "$(state_count '.exit.client_configs')"

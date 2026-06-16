@@ -201,7 +201,15 @@ entry_add_node() {
   printf "  %s\n\n" "$(c_yel 'Или зайди по SSH и выполни ОДНУ из команд ниже:')"
   printf "  %s\n\n" "$(c_cyn "ssh root@${ip}")"
 
-  printf "  %s\n" "$(c_grn '▸ Вариант 1 — curl | bash (основной):')"
+  printf "  %s\n" "$(c_grn '▸ Вариант 1 — git clone (самый надёжный, обходит блокировки):')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  cat <<EOF
+rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
+EOF
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+
+  printf "  %s\n" "$(c_grn '▸ Вариант 2 — curl | bash (быстрый, если raw.githubusercontent доступен):')"
   printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
   cat <<EOF
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
@@ -209,7 +217,7 @@ curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh |
 EOF
   printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
 
-  printf "  %s\n" "$(c_grn '▸ Вариант 2 — двух-шаговый (если pipe не работает):')"
+  printf "  %s\n" "$(c_grn '▸ Вариант 3 — двух-шаговый curl (если pipe зависает):')"
   printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
   cat <<EOF
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh -o /tmp/inst.sh
@@ -217,19 +225,11 @@ BRIDGE_CREDS='${creds_b64}' bash /tmp/inst.sh
 EOF
   printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
 
-  printf "  %s\n" "$(c_grn '▸ Вариант 3 — через wget (если curl недоступен):')"
+  printf "  %s\n" "$(c_grn '▸ Вариант 4 — через wget:')"
   printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
   cat <<EOF
 wget -qO- https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
   BRIDGE_CREDS='${creds_b64}' bash
-EOF
-  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
-
-  printf "  %s\n" "$(c_grn '▸ Вариант 4 — git clone (если raw.githubusercontent блокируется):')"
-  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
-  cat <<EOF
-git clone https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
-BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
 EOF
   printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
 
@@ -257,28 +257,28 @@ _write_install_commands() {
 # ▸ Затем выполни ОДНУ из 4 команд ниже (любую — все эквивалентны):
 
 # ─────────────────────────────────────────────────────────────────────────
-# ВАРИАНТ 1 — основной (curl | bash)
+# ВАРИАНТ 1 — git clone (самый надёжный, обходит блокировки raw.githubusercontent)
+# ─────────────────────────────────────────────────────────────────────────
+rm -rf /tmp/bridge-src && git clone --depth 1 https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
+
+# ─────────────────────────────────────────────────────────────────────────
+# ВАРИАНТ 2 — curl | bash (быстрый, если raw.githubusercontent доступен)
 # ─────────────────────────────────────────────────────────────────────────
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
   BRIDGE_CREDS='${creds_b64}' bash
 
 # ─────────────────────────────────────────────────────────────────────────
-# ВАРИАНТ 2 — двух-шаговый (если curl|bash зависает / не работает pipe)
+# ВАРИАНТ 3 — двух-шаговый curl (если pipe зависает)
 # ─────────────────────────────────────────────────────────────────────────
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh -o /tmp/inst.sh
 BRIDGE_CREDS='${creds_b64}' bash /tmp/inst.sh
 
 # ─────────────────────────────────────────────────────────────────────────
-# ВАРИАНТ 3 — через wget (если curl недоступен)
+# ВАРИАНТ 4 — через wget (если curl недоступен)
 # ─────────────────────────────────────────────────────────────────────────
 wget -qO- https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
   BRIDGE_CREDS='${creds_b64}' bash
-
-# ─────────────────────────────────────────────────────────────────────────
-# ВАРИАНТ 4 — git clone (если raw.githubusercontent.com заблокирован)
-# ─────────────────────────────────────────────────────────────────────────
-git clone https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
-BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
 EOF
 }
 

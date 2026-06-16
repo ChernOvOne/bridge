@@ -231,7 +231,7 @@ do_status() {
         status="running"
       fi
       echo "bridge $name port=$port status=$status"
-    done < <(state_get_raw '.exit.bridges[]')
+    done < <(jq -c '.exit.bridges[]' "$STATE_FILE" 2>/dev/null)
   else
     local n; n=$(state_count '.entry.exit_nodes')
     echo "exit_nodes=$n"

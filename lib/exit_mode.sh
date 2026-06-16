@@ -38,29 +38,27 @@ exit_main_menu() {
     printf "  Стран в подписке:      %s\n" "$(state_count '.exit.client_configs')"
     divider
 
+    printf "\n  %s\n" "$(c_yel 'ℹ Добавление новых стран в подписку делается с ENTRY-ноды')"
+    printf "  %s\n\n" "$(c_yel '   (br на Aeza → [1] Управление exit-нодами → [1] Добавить)')"
     cat <<EOF
-  [1]  Добавить новую страну в подписку
-  [2]  Показать JSON-блоки для уже созданных стран
-  [3]  Экспорт credentials для другой EXIT-ноды
-  [4]  Подключить вторую ENTRY-ноду (общий/изолированный мост)
-  [5]  Тест моста (TLS, порт, скорость)
-  [6]  Live-логи bridge-xray
-  [7]  Перезапустить bridge-xray
-  [8]  Переустановить / удалить мост
+  [1]  Тест моста (TLS, порт, скорость)
+  [2]  Live-логи bridge-xray
+  [3]  Перезапустить bridge-xray
+  [4]  Экспорт credentials (для разворачивания на другой EXIT-ноде)
+  [5]  Подключить вторую ENTRY-ноду (multi-tenant мост)
+  [6]  Переустановить / удалить мост
   ─────────────────────────────────────────────────────────────
   [9]  Обновить bridge-cli из GitHub
   [0]  Выход
 EOF
     read -r -p "$(c_bold 'Выбор'): " choice
     case "$choice" in
-      1) exit_add_country ;;
-      2) exit_show_countries ;;
-      3) exit_export_creds ;;
-      4) exit_add_entry_node ;;
-      5) exit_test_bridge ;;
-      6) exit_live_logs ;;
-      7) exit_restart_bridge ;;
-      8) exit_uninstall_menu ;;
+      1) exit_test_bridge ;;
+      2) exit_live_logs ;;
+      3) exit_restart_bridge ;;
+      4) exit_export_creds ;;
+      5) exit_add_entry_node ;;
+      6) exit_uninstall_menu ;;
       9) update_from_git ;;
       0) exit 0 ;;
       *) err "Неверный выбор"; sleep 1 ;;

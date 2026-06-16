@@ -184,27 +184,102 @@ entry_add_node() {
     "$client_priv" "$client_pub" "$client_shortid" \
     "$b_uuid" "$b_pub" "$b_sid" "$b_sni" "$bport"
 
-  # 9. Распечатать инструкцию пользователю
+  # 9. Сохранить команды в файл (для копирования) + показать все 4 варианта в выводе
+  local cmd_file="$STATE_DIR/generated/${cc}-install-cmd.sh"
+  _write_install_commands "$cmd_file" "$ip" "$creds_b64"
+  chmod +x "$cmd_file"
+
   clear
   header "✅ Добавлена exit-нода: ${cn} (${ip})"
-  printf "\n%s\n\n" "$(c_bold 'ШАГ 1 — Запусти на новой EXIT-ноде следующую команду:')"
+  printf "\n"
+  printf "%s\n" "$(c_bold "ШАГ 1 — Развернуть bridge-xray на новой ноде ${ip}")"
+  printf "\n  %s\n" "$(c_yel '📄 Все команды также сохранены в файл:')"
+  printf "      %s\n" "$(c_bold "$cmd_file")"
+  printf "  %s\n" "$(c_yel '   Использовать файл — самый простой способ:')"
+  printf "      %s\n"   "$(c_cyn "scp ${cmd_file} root@${ip}:/tmp/install-bridge.sh")"
+  printf "      %s\n\n" "$(c_cyn "ssh root@${ip} 'bash /tmp/install-bridge.sh'")"
+  printf "  %s\n\n" "$(c_yel 'Или зайди по SSH и выполни ОДНУ из команд ниже:')"
+  printf "  %s\n\n" "$(c_cyn "ssh root@${ip}")"
+
+  printf "  %s\n" "$(c_grn '▸ Вариант 1 — curl | bash (основной):')"
   printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
   cat <<EOF
-ssh root@${ip}
 curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
   BRIDGE_CREDS='${creds_b64}' bash
 EOF
   printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
-  printf "%s\n" "$(c_yel '↑ Эта команда автоматически:')"
-  printf "  • поставит Docker (если нет)\n"
-  printf "  • поднимет bridge-xray на :%s с твоими общими ключами моста\n" "$bport"
-  printf "  • поднимет iperf3-server на :%s\n" "$iport"
-  printf "  • откроет порты в firewall\n\n"
-  printf "%s\n\n" "$(c_bold 'ШАГ 2 — После выполнения команды на EXIT-ноде:')"
-  printf "  1. Добавь JSON-блоки в Remnawave panel (Config Profile + Host).\n"
-  printf "     Все блоки сохранены в файле: %s\n\n" "$(c_bold "$out_file")"
+
+  printf "  %s\n" "$(c_grn '▸ Вариант 2 — двух-шаговый (если pipe не работает):')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  cat <<EOF
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh -o /tmp/inst.sh
+BRIDGE_CREDS='${creds_b64}' bash /tmp/inst.sh
+EOF
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+
+  printf "  %s\n" "$(c_grn '▸ Вариант 3 — через wget (если curl недоступен):')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  cat <<EOF
+wget -qO- https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
+  BRIDGE_CREDS='${creds_b64}' bash
+EOF
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+
+  printf "  %s\n" "$(c_grn '▸ Вариант 4 — git clone (если raw.githubusercontent блокируется):')"
+  printf "%s\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+  cat <<EOF
+git clone https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
+EOF
+  printf "%s\n\n" "$(c_cyn '─────────────────────────────────────────────────────────────────────────')"
+
+  printf "%s\n" "$(c_yel 'Любой из 4 вариантов делает одно и то же:')"
+  printf "  • ставит Docker (если нет)\n"
+  printf "  • поднимает bridge-xray на :%s с твоими общими ключами моста\n" "$bport"
+  printf "  • поднимает iperf3-server на :%s\n" "$iport"
+  printf "  • открывает порты в firewall\n\n"
+  printf "%s\n\n" "$(c_bold 'ШАГ 2 — После выполнения на EXIT-ноде:')"
+  printf "  1. Добавь JSON-блоки в Remnawave panel.\n"
+  printf "     Файл с блоками: %s\n" "$(c_bold "$out_file")"
+  printf "     Посмотреть: %s\n\n" "$(c_cyn "cat $out_file")"
   printf "  2. Запусти повторный probe: главное меню → [2] Тест ОДНОЙ exit-ноды.\n\n"
   pause
+}
+
+# Helper: сохранить все 4 варианта команд в файл
+_write_install_commands() {
+  local file="$1" ip="$2" creds_b64="$3"
+  cat > "$file" <<EOF
+# Установочные команды для exit-ноды ${ip}
+# Сгенерировано: $(date -u +"%Y-%m-%d %H:%M UTC")
+# Содержит общие bridge-credentials в base64.
+# ▸ Сначала зайди по SSH: ssh root@${ip}
+# ▸ Затем выполни ОДНУ из 4 команд ниже (любую — все эквивалентны):
+
+# ─────────────────────────────────────────────────────────────────────────
+# ВАРИАНТ 1 — основной (curl | bash)
+# ─────────────────────────────────────────────────────────────────────────
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
+  BRIDGE_CREDS='${creds_b64}' bash
+
+# ─────────────────────────────────────────────────────────────────────────
+# ВАРИАНТ 2 — двух-шаговый (если curl|bash зависает / не работает pipe)
+# ─────────────────────────────────────────────────────────────────────────
+curl -fsSL https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh -o /tmp/inst.sh
+BRIDGE_CREDS='${creds_b64}' bash /tmp/inst.sh
+
+# ─────────────────────────────────────────────────────────────────────────
+# ВАРИАНТ 3 — через wget (если curl недоступен)
+# ─────────────────────────────────────────────────────────────────────────
+wget -qO- https://raw.githubusercontent.com/ChernOvOne/bridge/main/install.sh | \\
+  BRIDGE_CREDS='${creds_b64}' bash
+
+# ─────────────────────────────────────────────────────────────────────────
+# ВАРИАНТ 4 — git clone (если raw.githubusercontent.com заблокирован)
+# ─────────────────────────────────────────────────────────────────────────
+git clone https://github.com/ChernOvOne/bridge.git /tmp/bridge-src
+BRIDGE_CREDS='${creds_b64}' bash /tmp/bridge-src/install.sh
+EOF
 }
 
 # Helper: внешний IP этой ENTRY-ноды

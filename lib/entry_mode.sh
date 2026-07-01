@@ -11,7 +11,7 @@ entry_main_menu() {
     count=$(state_count '.entry.exit_nodes')
     last_probe_ts=$(ls -1t "$PROBE_HISTORY_DIR"/*.json 2>/dev/null | head -1 | xargs -I{} basename {} .json 2>/dev/null || echo "никогда")
 
-    header "bridge-cli v1.0  ▸  ENTRY-режим" "Нода: ${ip:-?}   ($hostname)"
+    header "bridge-cli v1.1  ▸  ENTRY-режим" "Нода: ${ip:-?}   ($hostname)"
     printf "  Exit-нод в инвентаре:  %s\n" "$(c_bold "$count")"
     printf "  Последний тест:        %s\n" "$last_probe_ts"
     divider
@@ -558,6 +558,9 @@ entry_credentials_menu() {
       printf "  %s\n" "Bridge-credentials нужны для добавления новых exit-нод одной"
       printf "  %s\n" "командой. Это общие UUID + Reality-keys которые используются"
       printf "  %s\n" "на всех твоих exit-нодах одновременно."
+      printf "\n"
+      printf "  %s\n" "$(c_yel '▸ Новая инсталляция?')  → [5] Сгенерировать новые"
+      printf "  %s\n" "$(c_yel '▸ Уже есть ENTRY?')     → [1] Импорт base64 с той ноды"
     fi
     divider
     cat <<EOF
@@ -565,6 +568,7 @@ entry_credentials_menu() {
   [2]  Импортировать вводом полей вручную
   [3]  Экспорт (base64-строка для другой ENTRY)
   [4]  Удалить
+  [5]  Сгенерировать новые (для новой независимой инсталляции)
   [0]  Назад
 EOF
     read -r -p "$(c_bold 'Выбор'): " act
@@ -573,6 +577,7 @@ EOF
       2) entry_creds_import_manual ;;
       3) entry_creds_export ;;
       4) entry_creds_delete ;;
+      5) entry_creds_generate_new ;;
       0) return ;;
       *) err "Неверный выбор"; sleep 1 ;;
     esac
@@ -642,5 +647,60 @@ entry_creds_delete() {
   if ! confirm "Точно удалить bridge-credentials?" "n"; then return; fi
   state_set '.entry.bridge_credentials = null'
   ok "Удалено"
+  pause
+}
+
+# [5] Сгенерировать новые credentials для новой независимой инсталляции.
+# UUID через gen_uuid, Reality keypair через gen_x25519 (docker xray x25519),
+# shortId через gen_shortid_8. SNI/dest/port спрашиваются с дефолтами.
+entry_creds_generate_new() {
+  step "Генерация новых bridge-credentials"
+  if state_has_bridge_creds; then
+    warn "Credentials уже настроены."
+    warn "Перегенерация СЛОМАЕТ связь со всеми существующими EXIT-нодами"
+    warn "этой инсталляции — их придётся переустановить с новыми ключами."
+    if ! confirm "Точно сгенерировать новые (старые будут перезаписаны)?" "n"; then
+      return
+    fi
+  fi
+
+  info "Генерирую UUID..."
+  local uuid; uuid=$(gen_uuid)
+  if [ -z "$uuid" ]; then err "Не удалось сгенерировать UUID"; pause; return; fi
+
+  info "Генерирую Reality x25519 keypair (через docker xray)..."
+  local kp priv pub
+  kp=$(gen_x25519) || { pause; return; }
+  priv=$(echo "$kp" | sed -n '1p')
+  pub=$(echo  "$kp" | sed -n '2p')
+
+  info "Генерирую shortId (8 hex)..."
+  local sid; sid=$(gen_shortid_8)
+
+  prompt "Reality SNI моста"  "max.ru"
+  local sni="$REPLY"
+  prompt "Reality dest моста" "max.ru:443"
+  local dest="$REPLY"
+  prompt "Bridge-port"        "7443"
+  local port="$REPLY"
+
+  local creds
+  creds=$(jq -n --arg uuid "$uuid" --arg priv "$priv" --arg pub "$pub" --arg sid "$sid" \
+                --arg sni "$sni" --arg dest "$dest" --argjson port "$port" \
+    '{bridges:[{name:"main",port:$port,transport:"reality",uuid:$uuid,reality_priv:$priv,reality_pub:$pub,reality_shortid:$sid,reality_sni:$sni,reality_dest:$dest}],
+      iperf3:{enabled:true,port:5201,allowed_ips:[]}}')
+  state_set_bridge_creds "$creds"
+  ok "Bridge-credentials сгенерированы и сохранены"
+  divider
+  printf "  %s %s\n" "$(c_bold 'UUID:')     " "$uuid"
+  printf "  %s %s\n" "$(c_bold 'Priv-key: ')" "$priv"
+  printf "  %s %s\n" "$(c_bold 'Pub-key:  ')" "$pub"
+  printf "  %s %s\n" "$(c_bold 'ShortId:  ')" "$sid"
+  printf "  %s %s\n" "$(c_bold 'SNI/dest: ')" "$sni / $dest"
+  printf "  %s %s\n" "$(c_bold 'Port:     ')" "$port"
+  divider
+  warn "СОХРАНИ эти значения! Priv-key больше нигде не выведется."
+  info "Дальше: [1] Управление exit-нодами → добавить EXIT — установочная"
+  info "команда автоматически подхватит эти credentials."
   pause
 }

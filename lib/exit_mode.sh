@@ -17,7 +17,7 @@ exit_main_menu() {
     ip=$(curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
     bridges=$(state_count '.exit.bridges')
     iperf3_on=$(state_get '.exit.iperf3.enabled')
-    header "bridge-cli v1.0  ▸  EXIT-режим" "Нода: ${ip:-?}   ($hostname)"
+    header "bridge-cli v1.1  ▸  EXIT-режим" "Нода: ${ip:-?}   ($hostname)"
     printf "  Мостов развёрнуто:     %s\n" "$(c_bold "$bridges")"
     if [ "$bridges" -gt 0 ]; then
       while IFS= read -r b; do

@@ -21,19 +21,30 @@ gen_uuid() {
 # ghcr.io/xtls/xray-core имеет ENTRYPOINT ["xray","run"] → нужно перебить на xray.
 # Дополнительно: если pull ghcr.io падает — авто-fallback на teddysun/xray с DockerHub.
 gen_x25519() {
-  local img="${XRAY_IMAGE:-$XRAY_IMAGE_DEFAULT}"
   local out err_out
   err_out=$(mktemp)
-  out=$(docker run --rm --entrypoint /usr/bin/xray "$img" x25519 2>"$err_out")
-  local rc=$?
-  if [ $rc -ne 0 ] || [ -z "$out" ]; then
-    warn "docker run $img x25519 не сработал (rc=$rc), пробую fallback teddysun/xray"
-    out=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>>"$err_out")
+  # Список кандидатов image + entrypoint. Пробуем по очереди, останавливаемся на первом
+  # рабочем. ВНИМАНИЕ: логирование ТОЛЬКО в stderr (>&2) — stdout зарезервирован под priv/pub.
+  local candidates=(
+    "${XRAY_IMAGE:-$XRAY_IMAGE_DEFAULT}|xray"
+    "${XRAY_IMAGE:-$XRAY_IMAGE_DEFAULT}|/usr/bin/xray"
+    "teddysun/xray:latest|xray"
+    "teddysun/xray:latest|/usr/bin/xray"
+  )
+  local pair img ep rc=0
+  for pair in "${candidates[@]}"; do
+    img="${pair%|*}"; ep="${pair#*|}"
+    out=$(docker run --rm --entrypoint "$ep" "$img" x25519 2>"$err_out")
     rc=$?
-  fi
-  if [ $rc -ne 0 ] || [ -z "$out" ]; then
-    err "Не удалось запустить docker run xray x25519"
-    err "Причина: $(tr -d '\r' < "$err_out" | tail -3 | tr '\n' ' ')"
+    if [ $rc -eq 0 ] && [ -n "$out" ] && echo "$out" | grep -q "Private"; then
+      break
+    fi
+    warn "x25519 через $img (entrypoint=$ep) не сработал (rc=$rc), пробую следующий" >&2
+    out=""
+  done
+  if [ -z "$out" ]; then
+    err "Не удалось получить x25519 keypair ни одним способом" >&2
+    err "Последняя ошибка: $(tr -d '\r' < "$err_out" | tail -3 | tr '\n' ' ')" >&2
     rm -f "$err_out"
     return 1
   fi
@@ -42,9 +53,10 @@ gen_x25519() {
   priv=$(echo "$out" | awk -F': ' '/Private/ {print $2}' | tr -d '[:space:]')
   pub=$(echo  "$out" | awk -F': ' '/Public/  {print $2}' | tr -d '[:space:]')
   if [ -z "$priv" ] || [ -z "$pub" ]; then
-    err "Не удалось распарсить x25519 keypair из вывода: $out"
+    err "Не удалось распарсить x25519 keypair из вывода: $out" >&2
     return 1
   fi
+  # ONLY payload goes to stdout.
   printf "%s\n%s\n" "$priv" "$pub"
 }
 
@@ -53,8 +65,15 @@ gen_x25519() {
 derive_x25519_pub() {
   local priv="$1"
   local img="${XRAY_IMAGE:-$XRAY_IMAGE_DEFAULT}"
-  docker run --rm --entrypoint /usr/bin/xray "$img" x25519 -i "$priv" 2>/dev/null | \
-    awk -F': ' '/Public/ {print $2}' | tr -d '[:space:]'
+  local out=""
+  for ep in xray /usr/bin/xray; do
+    for i in "$img" teddysun/xray:latest; do
+      out=$(docker run --rm --entrypoint "$ep" "$i" x25519 -i "$priv" 2>/dev/null | \
+        awk -F': ' '/Public/ {print $2}' | tr -d '[:space:]')
+      [ -n "$out" ] && { echo "$out"; return 0; }
+    done
+  done
+  return 1
 }
 
 gen_shortid_16() {
